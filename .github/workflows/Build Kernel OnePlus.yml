@@ -725,7 +725,42 @@ jobs:
 
           echo "manager_branch=$BRANCH" >> "$GITHUB_OUTPUT"
           echo "manager_artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
+      - name: Hotfix SukiSU Ultra 5.10 SUSFS
+        run: |
+          cd kernel_workspace/kernel_platform/KernelSU
 
+          echo "Fix adb_root.h: make struct user_arg_ptr visible"
+          if ! grep -q 'linux/binfmts.h' kernel/feature/adb_root.h; then
+            sed -i '/#include <asm\/ptrace.h>/a #include <linux/binfmts.h>' kernel/feature/adb_root.h
+          fi
+
+          echo "Fix sulog/event.c: keep non-SUSFS ksu_sulog_capture body inside #else"
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("kernel/sulog/event.c")
+          s = p.read_text()
+
+          s2 = re.sub(
+              r'(#else\s*\n\s*static struct ksu_sulog_pending_event \*ksu_sulog_capture\(__u16 event_type,\s*const char __user \*filename_user,\s*\n\s*const struct user_arg_ptr argv,\s*gfp_t gfp\)\s*)#endif\s*\n\s*\{',
+              r'\1{',
+              s,
+              count=1,
+          )
+
+          marker = "static struct ksu_sulog_pending_event *ksu_sulog_capture_grant_root"
+          i = s2.find(marker)
+          if i == -1:
+              raise SystemExit("marker not found in event.c")
+
+          if not s2[:i].rstrip().endswith("#endif"):
+              s2 = s2[:i] + "#endif\n\n" + s2[i:]
+
+          p.write_text(s2)
+          PY
+
+          echo "Hotfix done"
       - name: Add SukiSU Ultra
         run: |
           cd kernel_workspace/kernel_platform
