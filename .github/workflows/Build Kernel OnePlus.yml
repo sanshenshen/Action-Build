@@ -809,55 +809,73 @@ jobs:
           set -e
           cd kernel_workspace/kernel_platform
 
-          if [ -d "KernelSU/kernel" ]; then
-            KSU_DIR="KernelSU/kernel"
-          elif [ -d "common/drivers/kernelsu" ]; then
+          if [ -d "common/drivers/kernelsu" ]; then
             KSU_DIR="common/drivers/kernelsu"
+          elif [ -d "KernelSU/kernel" ]; then
+            KSU_DIR="KernelSU/kernel"
           else
             echo "❌ Cannot find SukiSU source"
-            find . -maxdepth 5 -type f \( -name adb_root.h -o -name event.c \) | sort || true
+            find . -maxdepth 6 -type f \( -name adb_root.h -o -name sucompat.h -o -name event.c \) | sort || true
             exit 1
           fi
 
           echo "✅ SukiSU source: $KSU_DIR"
 
-          python3 - "$KSU_DIR/feature/adb_root.h" <<'PY'
-          from pathlib import Path
-          import sys
-
-          p = Path(sys.argv[1])
-          s = p.read_text()
-
-          if "#include <linux/binfmts.h>" not in s:
-              if "#include <asm/ptrace.h>" in s:
-                  s = s.replace(
-                      "#include <asm/ptrace.h>",
-                      "#include <asm/ptrace.h>\n#include <linux/binfmts.h>",
-                      1,
-                  )
-              else:
-                  s = s.replace(
-                      "#define __KSU_H_ADB_ROOT",
-                      "#define __KSU_H_ADB_ROOT\n#include <linux/binfmts.h>",
-                      1,
-                  )
-
-          p.write_text(s)
-          print("✅ fixed adb_root.h")
-          PY
-
-          python3 - "$KSU_DIR/sulog/event.c" <<'PY'
+          python3 - "$KSU_DIR" <<'PY'
           from pathlib import Path
           import re
           import sys
 
-          p = Path(sys.argv[1])
+          base = Path(sys.argv[1])
+
+          # 1. Android 5.10 does not expose struct user_arg_ptr in a public header.
+          # Define a local compatible copy before sucompat.c / adb_root.h use it.
+          p = base / "kernel_includes.h"
+          s = p.read_text()
+
+          user_arg_ptr_block = r'''
+#include <linux/types.h>
+#include <linux/compat.h>
+
+#ifndef KSU_HAS_LOCAL_USER_ARG_PTR
+#define KSU_HAS_LOCAL_USER_ARG_PTR
+struct user_arg_ptr {
+#ifdef CONFIG_COMPAT
+	bool is_compat;
+#endif
+	union {
+		const char __user *const __user *native;
+#ifdef CONFIG_COMPAT
+		const compat_uptr_t __user *compat;
+#endif
+	} ptr;
+};
+#endif /* KSU_HAS_LOCAL_USER_ARG_PTR */
+'''
+
+          if "KSU_HAS_LOCAL_USER_ARG_PTR" not in s:
+              s = s.replace(
+                  "#define __KSU_H_KERNEL_INCLUDES",
+                  "#define __KSU_H_KERNEL_INCLUDES\n" + user_arg_ptr_block,
+                  1,
+              )
+              p.write_text(s)
+              print("✅ fixed kernel_includes.h: added local struct user_arg_ptr")
+          else:
+              print("ℹ️ kernel_includes.h already has user_arg_ptr fix")
+
+          # 2. Keep adb_root.h harmless; linux/binfmts.h does not solve this on 5.10.
+          p = base / "feature/adb_root.h"
+          s = p.read_text()
+          s = s.replace("#include <linux/binfmts.h>\n", "")
+          p.write_text(s)
+          print("✅ cleaned adb_root.h")
+
+          # 3. Fix sulog/event.c broken #else/#endif layout from this SukiSU commit.
+          p = base / "sulog/event.c"
           s = p.read_text()
 
           marker = "static struct ksu_sulog_pending_event *ksu_sulog_capture_grant_root"
-          if marker not in s:
-              raise SystemExit("❌ marker not found in event.c")
-
           pattern = re.compile(
               r'(#else\s*\n\s*static struct ksu_sulog_pending_event \*ksu_sulog_capture'
               r'\(__u16 event_type,\s*const char __user \*filename_user,\s*'
@@ -872,7 +890,7 @@ jobs:
               end = m.end()
               marker_pos = s.find(marker, end)
               if marker_pos == -1:
-                  raise SystemExit("❌ marker after function not found")
+                  raise SystemExit("❌ marker after ksu_sulog_capture not found")
 
               s = (
                   s[:start]
@@ -886,6 +904,7 @@ jobs:
               print("✅ fixed sulog/event.c")
           else:
               print("ℹ️ event.c pattern not found, maybe already fixed")
+
           PY
 
           echo "✅ Hotfix done"
