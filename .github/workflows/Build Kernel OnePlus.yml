@@ -725,42 +725,6 @@ jobs:
 
           echo "manager_branch=$BRANCH" >> "$GITHUB_OUTPUT"
           echo "manager_artifact=$ARTIFACT" >> "$GITHUB_OUTPUT"
-      - name: Hotfix SukiSU Ultra 5.10 SUSFS
-        run: |
-          cd kernel_workspace/kernel_platform/KernelSU
-
-          echo "Fix adb_root.h: make struct user_arg_ptr visible"
-          if ! grep -q 'linux/binfmts.h' kernel/feature/adb_root.h; then
-            sed -i '/#include <asm\/ptrace.h>/a #include <linux/binfmts.h>' kernel/feature/adb_root.h
-          fi
-
-          echo "Fix sulog/event.c: keep non-SUSFS ksu_sulog_capture body inside #else"
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          p = Path("kernel/sulog/event.c")
-          s = p.read_text()
-
-          s2 = re.sub(
-              r'(#else\s*\n\s*static struct ksu_sulog_pending_event \*ksu_sulog_capture\(__u16 event_type,\s*const char __user \*filename_user,\s*\n\s*const struct user_arg_ptr argv,\s*gfp_t gfp\)\s*)#endif\s*\n\s*\{',
-              r'\1{',
-              s,
-              count=1,
-          )
-
-          marker = "static struct ksu_sulog_pending_event *ksu_sulog_capture_grant_root"
-          i = s2.find(marker)
-          if i == -1:
-              raise SystemExit("marker not found in event.c")
-
-          if not s2[:i].rstrip().endswith("#endif"):
-              s2 = s2[:i] + "#endif\n\n" + s2[i:]
-
-          p.write_text(s2)
-          PY
-
-          echo "Hotfix done"
       - name: Add SukiSU Ultra
         run: |
           cd kernel_workspace/kernel_platform
@@ -840,7 +804,91 @@ jobs:
           echo "::group::最终 Makefile 中版本信息及部分调试结果预览"
           grep -nE '^(REPO_OWNER|REPO_NAME|REPO_BRANCH|KSU_VERSION_API|KSU_VERSION_FULL|VERSION_TAG|GIT_BIN|CURL_BIN)' kernel/Makefile
           echo "::endgroup::"
+      - name: Hotfix SukiSU Ultra 5.10 SUSFS
+        run: |
+          set -e
+          cd kernel_workspace/kernel_platform
 
+          if [ -d "KernelSU/kernel" ]; then
+            KSU_DIR="KernelSU/kernel"
+          elif [ -d "common/drivers/kernelsu" ]; then
+            KSU_DIR="common/drivers/kernelsu"
+          else
+            echo "❌ Cannot find SukiSU source"
+            find . -maxdepth 5 -type f \( -name adb_root.h -o -name event.c \) | sort || true
+            exit 1
+          fi
+
+          echo "✅ SukiSU source: $KSU_DIR"
+
+          python3 - "$KSU_DIR/feature/adb_root.h" <<'PY'
+          from pathlib import Path
+          import sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text()
+
+          if "#include <linux/binfmts.h>" not in s:
+              if "#include <asm/ptrace.h>" in s:
+                  s = s.replace(
+                      "#include <asm/ptrace.h>",
+                      "#include <asm/ptrace.h>\n#include <linux/binfmts.h>",
+                      1,
+                  )
+              else:
+                  s = s.replace(
+                      "#define __KSU_H_ADB_ROOT",
+                      "#define __KSU_H_ADB_ROOT\n#include <linux/binfmts.h>",
+                      1,
+                  )
+
+          p.write_text(s)
+          print("✅ fixed adb_root.h")
+          PY
+
+          python3 - "$KSU_DIR/sulog/event.c" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          p = Path(sys.argv[1])
+          s = p.read_text()
+
+          marker = "static struct ksu_sulog_pending_event *ksu_sulog_capture_grant_root"
+          if marker not in s:
+              raise SystemExit("❌ marker not found in event.c")
+
+          pattern = re.compile(
+              r'(#else\s*\n\s*static struct ksu_sulog_pending_event \*ksu_sulog_capture'
+              r'\(__u16 event_type,\s*const char __user \*filename_user,\s*'
+              r'const struct user_arg_ptr argv,\s*gfp_t gfp\)\s*)'
+              r'#endif\s*\n\s*\{',
+              re.S,
+          )
+
+          m = pattern.search(s)
+          if m:
+              start = m.start()
+              end = m.end()
+              marker_pos = s.find(marker, end)
+              if marker_pos == -1:
+                  raise SystemExit("❌ marker after function not found")
+
+              s = (
+                  s[:start]
+                  + m.group(1)
+                  + "{"
+                  + s[end:marker_pos]
+                  + "#endif\n\n"
+                  + s[marker_pos:]
+              )
+              p.write_text(s)
+              print("✅ fixed sulog/event.c")
+          else:
+              print("ℹ️ event.c pattern not found, maybe already fixed")
+          PY
+
+          echo "✅ Hotfix done"
       - name: Apply Patches SukiSU Ultra
         env:
           FILE: ${{ github.event.inputs.FILE }}
