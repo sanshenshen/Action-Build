@@ -815,7 +815,7 @@ jobs:
             KSU_DIR="KernelSU/kernel"
           else
             echo "❌ Cannot find SukiSU source"
-            find . -maxdepth 6 -type f \( -name adb_root.h -o -name sucompat.h -o -name event.c \) | sort || true
+            find . -maxdepth 6 -type f \( -name adb_root.h -o -name kernel_includes.h -o -name event.c \) | sort || true
             exit 1
           fi
 
@@ -828,30 +828,30 @@ jobs:
 
           base = Path(sys.argv[1])
 
-          # 1. Android 5.10 does not expose struct user_arg_ptr in a public header.
-          # Define a local compatible copy before sucompat.c / adb_root.h use it.
           p = base / "kernel_includes.h"
           s = p.read_text()
 
-          user_arg_ptr_block = r'''
-#include <linux/types.h>
-#include <linux/compat.h>
-
-#ifndef KSU_HAS_LOCAL_USER_ARG_PTR
-#define KSU_HAS_LOCAL_USER_ARG_PTR
-struct user_arg_ptr {
-#ifdef CONFIG_COMPAT
-	bool is_compat;
-#endif
-	union {
-		const char __user *const __user *native;
-#ifdef CONFIG_COMPAT
-		const compat_uptr_t __user *compat;
-#endif
-	} ptr;
-};
-#endif /* KSU_HAS_LOCAL_USER_ARG_PTR */
-'''
+          user_arg_ptr_block = "\n".join([
+              "",
+              "#include <linux/types.h>",
+              "#include <linux/compat.h>",
+              "",
+              "#ifndef KSU_HAS_LOCAL_USER_ARG_PTR",
+              "#define KSU_HAS_LOCAL_USER_ARG_PTR",
+              "struct user_arg_ptr {",
+              "#ifdef CONFIG_COMPAT",
+              "\tbool is_compat;",
+              "#endif",
+              "\tunion {",
+              "\t\tconst char __user *const __user *native;",
+              "#ifdef CONFIG_COMPAT",
+              "\t\tconst compat_uptr_t __user *compat;",
+              "#endif",
+              "\t} ptr;",
+              "};",
+              "#endif /* KSU_HAS_LOCAL_USER_ARG_PTR */",
+              "",
+          ])
 
           if "KSU_HAS_LOCAL_USER_ARG_PTR" not in s:
               s = s.replace(
@@ -860,18 +860,16 @@ struct user_arg_ptr {
                   1,
               )
               p.write_text(s)
-              print("✅ fixed kernel_includes.h: added local struct user_arg_ptr")
+              print("✅ fixed kernel_includes.h")
           else:
-              print("ℹ️ kernel_includes.h already has user_arg_ptr fix")
+              print("ℹ️ kernel_includes.h already fixed")
 
-          # 2. Keep adb_root.h harmless; linux/binfmts.h does not solve this on 5.10.
           p = base / "feature/adb_root.h"
           s = p.read_text()
           s = s.replace("#include <linux/binfmts.h>\n", "")
           p.write_text(s)
           print("✅ cleaned adb_root.h")
 
-          # 3. Fix sulog/event.c broken #else/#endif layout from this SukiSU commit.
           p = base / "sulog/event.c"
           s = p.read_text()
 
@@ -889,6 +887,7 @@ struct user_arg_ptr {
               start = m.start()
               end = m.end()
               marker_pos = s.find(marker, end)
+
               if marker_pos == -1:
                   raise SystemExit("❌ marker after ksu_sulog_capture not found")
 
@@ -900,6 +899,7 @@ struct user_arg_ptr {
                   + "#endif\n\n"
                   + s[marker_pos:]
               )
+
               p.write_text(s)
               print("✅ fixed sulog/event.c")
           else:
