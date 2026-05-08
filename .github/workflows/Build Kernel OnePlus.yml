@@ -10,6 +10,7 @@ on:
         options:
           - oneplus_nord_n30_se_5g_v
           - oneplus_10r_v
+          - oneplus_ace2_v
           - oneplus_nord_3_v
           - oneplus_ace_v
           - oneplus_ace_race_v
